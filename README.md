@@ -54,7 +54,7 @@ El backend actual es una aplicación monolítica en Node.js desplegada en un ser
 
 ### 3.3 Requerimientos para la nueva arquitectura
 El equipo directivo de RapidGo ha definido los siguientes requerimientos no funcionales que la nueva arquitectura debe cumplir. El grupo debe verificar en los ADRs que las decisiones tomadas satisfacen estos requerimientos:
-<img width="500" height="175" alt="image" src="https://github.com/user-attachments/assets/3cff8f3d-04ff-4bb7-927b-9a6e3accca47" />
+<img width="500" height="175" alt="image" src="assets/requisitos.png" />
 
 
 ### 3.4 Restricciones del proyecto
@@ -120,6 +120,30 @@ El presente diagrama de contenedores desglosa el interior del sistema "Plataform
 
 * **Pasarela de Pagos:** Recibe de forma segura los datos de cobro vía HTTPS para procesar la comisión correspondiente al modelo de negocio de RapidGo.
 * **Servicios Push (FCM y APNS):** Reciben las cargas de trabajo despachadas por el Motor de Notificaciones mediante APIs nativas para entregar alertas en tiempo real a los ecosistemas Android e iOS.
+
+### C3 - Componentes
+
+<img width="1364" height="664" alt="image" src="assets/C3.drawio.png" />
+
+### Descripción del Modelo C3 (Componentes)
+
+El presente diagrama de componentes hace "zoom" dentro del contenedor "Motor de Reglas de Negocio", detallando las unidades individuales encargadas de ejecutar la lógica de dominio específica del sistema. Estas piezas están diseñadas para operar de forma independiente, ejecutarse bajo demanda y escalar según el volumen de peticiones.
+
+**Componentes Internos (Funciones de Procesamiento):**
+
+* **registrarPedido:** Unidad encargada de recibir, validar y procesar la solicitud de un nuevo pedido proveniente del punto de entrada unificado. Interactúa con la pasarela de pagos para procesar el cobro y persiste el pedido en la Base de Datos con el estado inicial "confirmado".
+* **actualizarEstado:** Unidad responsable de recibir solicitudes para modificar el ciclo de vida de un pedido. Actualiza el registro en la base de datos y, tras una operación exitosa, desencadena un evento interno para notificar el cambio.
+* **consultarHistorial:** Unidad de solo lectura dedicada a consultar la base de datos y devolver la lista de pedidos previos asociados a un usuario específico.
+* **notificarCliente:** Unidad activada por eventos de cambio de estado. Se encarga de construir y enviar la carga de datos de la alerta hacia el Motor de Notificaciones, para informar al cliente en tiempo real.
+* **gestionarArchivos:** Unidad encargada de recibir y gestionar la subida de recursos estáticos, tales como las fotos de los comprobantes de entrega, almacenándolas de forma segura en el Almacén de Archivos.
+
+**Interacciones con otros Contenedores y Sistemas:**
+
+* **Punto de Entrada (API Gateway):** Enruta las peticiones de red entrantes desde la App Móvil hacia las unidades de procesamiento correspondientes (`registrarPedido`, `actualizarEstado`, `consultarHistorial`, `gestionarArchivos`).
+* **Base de Datos:** Las funciones de negocio interactúan con esta capa transaccional para leer historiales y registrar las actualizaciones en el estado de los pedidos.
+* **Almacén de Archivos:** Recibe de forma segura los recursos binarios (como las fotos de entrega) procesados por el componente `gestionarArchivos`.
+* **Pasarela de Pagos:** Sistema externo consultado directamente por la función `registrarPedido` para validar y procesar el cobro de la comisión correspondiente.
+* **Motor de Notificaciones:** Recibe las instrucciones despachadas asíncronamente por la función `notificarCliente` y se encarga de orquestar la entrega final hacia los proveedores de servicios de notificaciones propios de cada plataforma móvil.
 
 ---
 > *Nota: Este documento se irá actualizando conforme avance el desarrollo del proyecto.*
