@@ -73,7 +73,7 @@ El grupo debe considerar estas restricciones al tomar las decisiones documentada
 
 ### C1 - Contexto
 
-<img width="1364" height="664" alt="image" src="https://github.com/user-attachments/assets/ae6381d3-5962-4e5f-973f-fc1800b75681" />
+<img width="1364" height="664" alt="image" src="assets/C1 RapidGoo.drawio.png" />
 
 
 ### Descripción del Modelo C1 (Contexto del Sistema)
@@ -97,7 +97,7 @@ El presente diagrama de contexto modela a RapidGo como un sistema de caja negra,
 
 ### C2 - Contenedores
 
-<img width="1454" height="954" alt="image" src="https://github.com/user-attachments/assets/b8667089-2f1a-4499-b1fb-e413a1da00bd" />
+<img width="1364" height="664" alt="image" src="assets/C2 RapidGo.drawio.png" />
 
 ### Descripción del Modelo C2 (Contenedores)
 
