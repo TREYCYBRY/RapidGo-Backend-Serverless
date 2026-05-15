@@ -251,5 +251,61 @@ Por otro lado la adopción de la capa gratuita garantiza el cumplimiento estrict
 * **Complejidad de migración:** Se requiere diseñar y ejecutar procesos ETL complejos para transformar los 3 años de datos históricos estructurados en MySQL hacia las nuevas colecciones orientadas a documentos NoSQL.
 * **Acoplamiento de SDK:** El código en las Azure Functions dependerá del SDK propietario de Cosmos DB para las operaciones CRUD, limitando la portabilidad futura a otras nubes.
 * **Riesgo por consumo de RU/s.** Consultas mal diseñadas sin la clave de partición correcta pueden agotar rápidamente los 1.000 RU/s gratuitos, generando latencia adicional.
+
+# ARCHITECTURE DECISION RECORD (ADR) 5
+
+| Atributo | Detalle |
+| :--- | :--- |
+| **Fecha** | 09/05/2026 |
+| **ADR-05** | Notification Hubs vs Azure Communication Services para notificaciones push |
+| **Versión** | 1.0 |
+
+## CONTEXTO
+El sistema actual de notificaciones de RapidGo es inestable, presentando una tasa de entrega del 67% debido a la falta de integración directa con FCM y APNs. Esto genera confusión en los clientes respecto al estado de sus pedidos. Se requiere una arquitectura de mensajería que cumpla con el requerimiento de garantizar una tasa de entrega superior al 95%, mejorando la experiencia del cliente con estados en tiempo real. 
+
+**Restricciones**
+* Restricción 1: El presupuesto no debe superar los $50 USD mensuales durante el piloto, priorizando servicios con capa gratuita.
+* Restricción 2: El equipo de infraestructura es de una sola persona, exigiendo minimizar la carga operativa.
+* Restricción 3: Se debe notificar simultáneamente a dispositivos Android e iOS integrados en la aplicación React Native actual.
+
+## ALTERNATIVAS EVALUADAS
+
+| Criterio Estratégico | Azure Notification Hubs | Azure Communication Services | Azure Web PubSub |
+| :--- | :--- | :--- | :--- |
+| **Integración nativa FCM/APNs**<br>Peso [5] | 5<br>Pts: 25 | 4<br>Pts: 20 | 2<br>Pts: 10 |
+| **Presupuesto y Capa Gratuita**<br>Peso [5] | 5<br>Pts: 25 | 3<br>Pts: 15 | 3<br>Pts: 15 |
+| **Confiabilidad de entrega (>95%)**<br>Peso [4] | 5<br>Pts: 20 | 5<br>Pts: 20 | 4<br>Pts: 16 |
+| **Minimizar Carga Operativa**<br>Peso [3] | 4<br>Pts: 12 | 3<br>Pts: 9 | 2<br>Pts: 6 |
+| **Puntaje Total (85)** | **82** | **64** | **47** |
+
+El análisis de las tres herramientas de mensajería en tiempo real revela un contraste significativo en su enfoque operativo. 
+
+La alternativa ganadora es la opción de **Azure Notification Hubs** con un total de 82 puntos. Su arquitectura está diseñada específicamente para ser un motor de orquestación push, alcanzando la máxima puntuación al abstraer por completo la complejidad de conectarse a Google y Apple de forma simultánea. Además, su alineación con el presupuesto es perfecta gracias a su nivel gratuito.
+
+Por otro lado, **Azure Communication Services** alcanza 64 puntos, presentándose como una plataforma omnicanal sumamente robusta que incluye SMS y llamadas. Sin embargo, su enfoque es demasiado amplio para el problema puntual de RapidGo, carece de una capa gratuita generosa para notificaciones push exclusivas y añade una complejidad innecesaria para un equipo pequeño.
+
+Finalmente, se evaluó **Azure Web PubSub** que obtuvo 47 puntos. Aunque es excelente para conexiones bidireccionales en tiempo real mediante WebSockets, fue penalizado fuertemente debido a que no utiliza los servicios push nativos de los sistemas operativos móviles estando la app en segundo plano, obligando al desarrollador a mantener conexiones activas que drenan la batería del dispositivo del cliente.
+
+---
+
+## DECISIÓN Y JUSTIFICACIÓN
+Se elige **Azure Notification Hubs** activando el plan Free tier para la gestión de alertas.
+
+La justificación técnica se fundamenta en su capacidad para unificar la carga útil de los mensajes. En lugar de que las Azure Functions deban compilar un mensaje con el formato específico que exige Google y otro distinto para Apple, Notification Hubs recibe una única solicitud genérica y se encarga de traducirla y enrutarla automáticamente a FCM o APNs. Esto reduce drásticamente las líneas de código a mantener y minimiza la carga operativa del equipo.
+
+A nivel de negocio, la plataforma garantiza el cumplimiento del requerimiento de entrega superior al 95% al contar con reintentos automáticos y telemetría exacta. Simultáneamente, su capa gratuita de un millón de notificaciones al mes absorbe la totalidad del tráfico proyectado para la fase piloto, blindando el presupuesto de los $50 USD.
+
+## CONSECUENCIAS Y TRADE-OFFS
+
+### Ventajas obtenidas:
+* **Alta confiabilidad multiplataforma.** Microsoft respalda este servicio asegurando un motor de enrutamiento capaz de enviar alertas masivas de forma rápida y segura a cualquier plataforma móvil.
+* **Viabilidad financiera del piloto.** El modelo de precios ofrece un millón de operaciones iniciales sin costo, eliminando cualquier riesgo de impacto en el presupuesto mensual de la empresa.
+* **Desacoplamiento del código backend.** Las funciones serverless se liberan de gestionar las credenciales de seguridad individuales de Google y Apple, centralizándolas en el hub.
+
+### Trade-offs asumidos:
+* Límite estricto en la capa gratuita que requerirá un monitoreo constante, ya que superar el millón de eventos generará costos adicionales imprevistos.
+* Gestión de credenciales de terceros al obligar al equipo de infraestructura a renovar manualmente los certificados de Apple y las claves de Firebase anualmente.
+* Dificultad para rastrear errores de entrega individuales si un dispositivo específico pierde la conexión, requiriendo activar configuraciones de telemetría avanzadas.
+
 ---
 > *Nota: Este documento se irá actualizando conforme avance el desarrollo del proyecto.*
