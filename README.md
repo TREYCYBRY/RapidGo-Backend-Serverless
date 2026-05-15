@@ -252,6 +252,110 @@ Por otro lado la adopción de la capa gratuita garantiza el cumplimiento estrict
 * **Acoplamiento de SDK:** El código en las Azure Functions dependerá del SDK propietario de Cosmos DB para las operaciones CRUD, limitando la portabilidad futura a otras nubes.
 * **Riesgo por consumo de RU/s.** Consultas mal diseñadas sin la clave de partición correcta pueden agotar rápidamente los 1.000 RU/s gratuitos, generando latencia adicional.
 
+# ARCHITECTURE DECISION RECORD (ADR) 3
+
+| Atributo | Detalle |
+| :--- | :--- |
+| **Fecha** | 12/05/2026 |
+| **ADR-03** | Selección de Azure API Management vs Exposición directa de las Functions |
+| **Versión** | 1.0 |
+
+### CONTEXTO
+
+La arquitectura heredada de RapidGo acopla la validación de tokens JWT dentro de un monolito en Node.js. Al transicionar a una arquitectura serverless, carecemos de un gateway centralizado, lo que genera una superficie de ataque fragmentada y obliga a replicar la lógica de seguridad en cada endpoint. Se requiere desplegar una capa de abstracción perimetral que asuma el enrutamiento y la autenticación, garantizando compatibilidad absoluta con los contratos de la aplicación en React Native (preservando rutas y esquemas JSON), mitigando la saturación de peticiones (throttling) y operando sin requerir mantenimiento continuo de infraestructura.
+
+**Restricciones:**
+* **Restricción 1:** Cero refactorización en el cliente; la app móvil debe mantener su contrato de consumo de API intacto.
+* **Restricción 2:** Infraestructura gestionada por un único ingeniero; se descartan soluciones que requieran parcheo o administración de clústeres.
+* **Restricción 3:** El costo operativo del piloto está limitado a un máximo de $50 USD mensuales.
+
+### ALTERNATIVAS EVALUADAS
+
+| Criterio Estratégico | Azure API Management | Exposición Directa (Functions) | Azure Application Gateway |
+| :--- | :--- | :--- | :--- |
+| **Centralización y Seguridad (JWT)**<br>Peso [5] | 5<br>Pts: 25 | 2<br>Pts: 10 | 4<br>Pts: 20 |
+| **Compatibilidad de Contratos (Enrutamiento)**<br>Peso [5] | 5<br>Pts: 25 | 3<br>Pts: 15 | 4<br>Pts: 20 |
+| **Control de Tráfico (Throttling)**<br>Peso [4] | 5<br>Pts: 20 | 2<br>Pts: 8 | 4<br>Pts: 16 |
+| **Modelo Financiero / Costo Piloto**<br>Peso [4] | 4<br>Pts: 16 | 5<br>Pts: 20 | 1<br>Pts: 4 |
+| **Puntaje Total (90)** | **86** | **53** | **60** |
+
+Se evaluaron tres enfoques de exposición mediante una matriz ponderada:
+
+1. **Azure API Management (Opción Seleccionada - 86 pts):** Actúa como un API Gateway puro. Su motor de políticas permite interceptar el tráfico, validar los claims del JWT y reescribir las URLs antes de tocar el cómputo subyacente. El modelo de facturación Consumption se alinea con arquitecturas serverless.
+2. **Exposición Directa de Functions (53 pts):** Económicamente es la opción de menor impacto, pero representa un antipatrón arquitectónico a escala. Descentraliza la validación de identidad, carece de controles globales contra ráfagas de tráfico y expone directamente la topología del backend al cliente.
+3. **Azure Application Gateway (60 pts):** Solución robusta de capa 7 con WAF integrado. Sin embargo, su enfoque orientado a red tradicional y su modelo de instancias dedicadas exceden drásticamente tanto la complejidad operativa requerida como el límite presupuestal del piloto.
+
+### DECISIÓN Y JUSTIFICACIÓN
+
+Se elige Azure API Management operando en el tier Consumption.
+
+La decisión se fundamenta en la necesidad imperativa de desacoplar responsabilidades. APIM asume la carga transversal de seguridad (CORS, validación JWT, limitación de tasa), liberando a las Azure Functions para que ejecuten exclusivamente lógica de negocio. Crucialmente, la capacidad de URL rewrite de APIM permite enmascarar la nueva topología de microservicios, cumpliendo la restricción de no alterar los contratos HTTP que actualmente consume la aplicación en React Native. Al elegir el tier de consumo, el costo se ata directamente al tráfico real, viabilizando económicamente el piloto. 
+
+Para cumplir con la restricción de soberanía de datos y latencia, la instancia de APIM se aprovisionará en la región East US (o Brazil South). La elección de East US típicamente ofrece una latencia de red base de ~60-90ms hacia el eje cafetero y Antioquia, lo cual deja un margen de más de 700ms para el procesamiento interno de las Functions (escritas en Node.js/Python), garantizando el cumplimiento de la métrica objetivo de < 800ms en el P95.
+
+### CONSECUENCIAS Y TRADE-OFFS
+
+**Ventajas obtenidas:**
+* **Seguridad perimetral desacoplada:** Las peticiones no autenticadas o abusivas son rechazadas en el borde, optimizando el consumo de recursos de las Functions.
+* **Transparencia para el cliente:** La app móvil interactúa con los mismos endpoints de siempre; el enrutamiento interno es invisible para el frontend.
+* **Evolución sin fricción:** Habilita la futura integración de nuevos clientes (como plataformas web) mediante la creación de nuevos productos y cuotas dentro del mismo Gateway.
+
+**Trade-offs asumidos:**
+* **Overhead de latencia:** Introduce un salto de red adicional para procesar las políticas de entrada, aunque típicamente es inferior a 20ms.
+* **Complejidad en despliegues:** Obliga al equipo a integrar la gestión de políticas XML dentro del ciclo de vida y los pipelines de CI/CD.
+* **Cold Starts de APIM:** En el tier Consumption, tras periodos de inactividad (como la ventana de baja demanda de 2am a 8am), la primera petición sufrirá latencia degradada. Sin embargo, dado que el SLA de < 800ms se mide en el P95 (percentil 95), los picos esporádicos por arranque en frío no penalizarán la métrica general durante las horas pico de 1.200 a 4.500 pedidos.
+
+
+# ARCHITECTURE DECISION RECORD (ADR) 4
+
+| Atributo | Detalle |
+| :--- | :--- |
+| **Fecha** | 12/05/2026 |
+| **ADR-04** | Selección de Azure Blob Storage vs Azure Files para almacenamiento de archivos |
+| **Versión** | 1.0 |
+
+### CONTEXTO
+
+La operativa logística exige un sistema de retención para datos no estructurados, centralizado principalmente en fotografías de comprobantes de entrega subidas por los 340 repartidores activos. Adicionalmente, el sistema debe alojar recursos estáticos (imágenes de productos) y reportes transaccionales. Estos assets requieren alta disponibilidad para su renderizado inmediato en las aplicaciones iOS y Android de los clientes finales. Ante proyecciones de 4.500 pedidos en ventanas de alta demanda, la infraestructura debe escalar de manera invisible, manteniendo un costo marginal y sin requerir aprovisionamiento manual.
+
+**Restricciones:**
+* **Restricción 1:** El diseño debe acotarse a un límite financiero estricto de $50 USD mensuales durante la fase de validación.
+* **Restricción 2:** Cero administración de sistemas de archivos; el único responsable de infraestructura no gestionará discos, montajes ni servidores de almacenamiento.
+
+### ALTERNATIVAS EVALUADAS
+
+| Criterio Estratégico | Azure Blob Storage | Azure Files | Base de Datos (Base64) |
+| :--- | :--- | :--- | :--- |
+| **Costo a Gran Escala**<br>Peso [5] | 5<br>Pts: 25 | 2<br>Pts: 10 | 1<br>Pts: 5 |
+| **Acceso Nativo HTTP/HTTPS**<br>Peso [5] | 5<br>Pts: 25 | 1<br>Pts: 5 | 2<br>Pts: 10 |
+| **Carga Operativa y de Desarrollo**<br>Peso [4] | 4<br>Pts: 16 | 3<br>Pts: 12 | 5<br>Pts: 20 |
+| **Escalabilidad y Rendimiento**<br>Peso [3] | 4<br>Pts: 12 | 4<br>Pts: 12 | 1<br>Pts: 3 |
+| **Puntaje Total (85)** | **78** | **39** | **38** |
+
+Se evaluaron tres arquitecturas de persistencia mediante una matriz ponderada:
+
+1. **Azure Blob Storage (Opción Seleccionada - 85 pts):** Paradigma de almacenamiento de objetos (Object Storage). Es el estándar para servir archivos multimedia en la web. Ofrece acceso nativo por HTTP/HTTPS y su nivel de redundancia local (LRS) es la opción de almacenamiento en frío/caliente más económica de Azure.
+2. **Azure Files (53 pts):** Optimizado para protocolos compartidos (SMB/NFS) típicos de arquitecturas legacy (Lift-and-Shift). Su costo base es significativamente mayor y su modelo de acceso no está diseñado para el consumo directo y masivo desde clientes móviles.
+3. **Almacenamiento en Base de Datos (34 pts):** Antipatrón para este caso de uso. Persistir imágenes como cadenas Base64 en Cosmos DB consumiría rápidamente la cuota transaccional, degradaría los tiempos de respuesta de las consultas operativas e inflaría los costos de manera insostenible.
+
+### DECISIÓN Y JUSTIFICACIÓN
+
+Se adopta Azure Blob Storage configurado en el tier LRS Standard (Locally Redundant Storage), desplegado obligatoriamente en la región East US (o Brazil South) para cumplir con las normativas de soberanía de datos de usuarios colombianos. 
+
+La naturaleza de los comprobantes y recursos fotográficos encaja perfectamente en el paradigma de almacenamiento de objetos: son archivos inmutables que no requieren jerarquías complejas ni bloqueos de lectura/escritura a nivel de sistema de archivos. Blob Storage permite entregar los archivos directamente a la aplicación móvil a través de la red perimetral de Azure, reduciendo la carga computacional en el backend. Su integración fluida con Azure Functions mediante Bindings de entrada/salida optimiza la escritura de código, y su esquema de cobro (por GB utilizado e interacciones) asegura el cumplimiento de la restricción presupuestal.
+
+### CONSECUENCIAS Y TRADE-OFFS
+
+**Ventajas obtenidas:**
+* **Optimización financiera:** Se garantiza el costo mínimo posible en la nube para persistencia de datos no estructurados, pagando fracciones de centavo por transacción.
+* **Descarga del backend (Offloading):** Las imágenes se sirven directamente desde el Storage hacia React Native, evitando que las peticiones pesadas saturen el enrutador o las Functions.
+* **Cero fricción operativa:** Al ser una plataforma puramente PaaS, la elasticidad es delegada totalmente al proveedor de nube, cumpliendo con la capacidad operativa del equipo.
+* **Compatibilidad nativa con el Stack:** La generación de las firmas de acceso compartido (SAS Tokens) requeridas para la descarga segura se integra de manera nativa y con SDKs oficiales tanto en Node.js como en Python (los únicos lenguajes disponibles para el equipo), sin requerir curvas de aprendizaje adicionales.
+
+**Trade-offs asumidos:**
+* **Gestión de control de acceso delegado:** Dado que los comprobantes son privados, se requerirá programar la generación de tokens SAS (Shared Access Signatures) temporales desde el backend para autorizar la descarga segura en el cliente. Además, aunque la descarga directa al cliente móvil (React Native) libera de carga al backend, el tráfico de salida (Egress) desde Blob Storage hacia internet generará un costo variable. Se deberá monitorear que en picos de 4.500 pedidos este rubro no ponga en riesgo el límite presupuestal de $50 USD del piloto.
+* **Redundancia limitada al datacenter:** Al usar LRS, la replicación de datos se limita a un único centro de datos. En caso de una caída zonal a nivel de infraestructura física en Azure, los archivos estarán temporalmente indisponibles.
+
 # ARCHITECTURE DECISION RECORD (ADR) 5
 
 | Atributo | Detalle |
